@@ -1,4 +1,4 @@
-use crate::types::{Chunk, Record};
+use crate::core::wal::{Chunk, Record};
 use thiserror::Error;
 
 const MAGIC: &[u8; 16] = b"!OBJECTSTOREWAL!";
@@ -148,7 +148,7 @@ pub fn decode_chunk(data: &[u8]) -> Result<Vec<Record>, CodecError> {
 mod tests {
 
     use super::*;
-    use crate::types::Record;
+    use crate::core::wal::Record;
 
     #[test]
     fn test_codec_round_trip() -> Result<(), String> {

@@ -2,20 +2,18 @@ use bytes::BytesMut;
 use futures::StreamExt;
 
 use crate::codec;
-use crate::objectstore::ports::{
-    GetObjectRequest, ObjectStoreReader, ObjectStoreWriter, PubObjectRequest,
-};
+use crate::objectstore::ports::*;
 use crate::objectstore::util::{bytes_to_stream, stream_to_struct, struct_to_stream};
 use crate::types::{Chunk, Manifest, ManifestResponse, WALError};
 
 pub const MANIFEST_KEY: &str = "manifest.json";
 
-async fn get_manifest<T>(
+pub async fn get_manifest<T>(
     client: &T,
     bucket_name: &str,
     manifest_key: &str,
     etag: Option<&str>,
-) -> Result<ManifestResponse, WALError>
+) -> Result<Option<ManifestResponse>, WALError>
 where
     T: ObjectStoreReader,
 {
@@ -28,46 +26,56 @@ where
         .await
         .map_err(|err| WALError::Internal(err.to_string()))?;
 
-    let manifest: Manifest = stream_to_struct(response.body)
+    let Some(object_response) = response else {
+        return Ok(None);
+    };
+
+    let manifest: Manifest = stream_to_struct(object_response.body)
         .await
         .map_err(|err| WALError::Internal(err.to_string()))?;
 
     let manifest_response = ManifestResponse {
         manifest: manifest,
-        etag: response.etag,
+        etag: object_response.etag,
     };
 
-    Ok(manifest_response)
+    Ok(Some(manifest_response))
 }
 
-async fn put_manifest<T>(
+pub async fn put_manifest<T>(
     client: &T,
     bucket_name: &str,
     etag: Option<&str>,
     manifest_key: &str,
     manifest: &Manifest,
-) -> Result<Option<String>, WALError>
+) -> Result<String, WALError>
 where
     T: ObjectStoreWriter,
 {
     let body = struct_to_stream(manifest).map_err(|err| WALError::Internal(err.to_string()))?;
+    let mut condition = PutObjectCondition::IfNoneMatch;
+    if let Some(etag) = etag {
+        condition = PutObjectCondition::IfMatch(etag.to_string());
+    }
 
     let request: PubObjectRequest = PubObjectRequest {
         bucket: bucket_name.to_string(),
         key: manifest_key.to_string(),
-        if_none_match: etag.map(String::from),
         body: body,
+        condition: Some(condition),
     };
 
-    let response = client
-        .put_object(request)
-        .await
-        .map_err(|err| WALError::Internal(err.to_string()))?;
+    let response = client.put_object(request).await.map_err(|err| match err {
+        ObjectStoreError::PreConditionFailed(val) | ObjectStoreError::Conflict(val) => {
+            WALError::ManifestOutOfDate(val)
+        }
+        _ => WALError::Internal(err.to_string()),
+    })?;
 
     Ok(response.etag)
 }
 
-async fn write_chunk<T>(
+pub async fn write_chunk<T>(
     client: &T,
     bucket_name: &str,
     chunk_key: &str,
@@ -76,7 +84,8 @@ async fn write_chunk<T>(
 where
     T: ObjectStoreWriter,
 {
-    let encoded = codec::encode_chunk(chunk).map_err(|err| WALError::Internal(err.to_string()))?;
+    let encoded =
+        codec::encode_records(&chunk.records).map_err(|err| WALError::Internal(err.to_string()))?;
     let stream = bytes_to_stream(encoded).map_err(|err| WALError::Internal(err.to_string()))?;
 
     let response = client
@@ -84,7 +93,7 @@ where
             bucket: bucket_name.to_string(),
             key: chunk_key.to_string(),
             body: stream,
-            if_none_match: None,
+            condition: None,
         })
         .await
         .map_err(|err| WALError::Internal(err.to_string()))?;
@@ -92,7 +101,11 @@ where
     Ok(())
 }
 
-async fn read_chunk<T>(client: &T, bucket_name: &str, chunk_key: &str) -> Result<Chunk, WALError>
+pub async fn read_chunk<T>(
+    client: &T,
+    bucket_name: &str,
+    chunk_key: &str,
+) -> Result<Chunk, WALError>
 where
     T: ObjectStoreReader,
 {
@@ -105,13 +118,17 @@ where
         .await
         .map_err(|err| WALError::Internal(err.to_string()))?;
 
+    let Some(object_response) = response else {
+        return Err(WALError::Internal(format!("expected chunk, got none")));
+    };
+
     let mut buf = BytesMut::new();
-    let mut body = response.body;
+    let mut body = object_response.body;
     while let Some(chunk_bytes_result) = body.next().await {
         let chunk_bytes = chunk_bytes_result.map_err(|err| WALError::Internal(err.to_string()))?;
         buf.extend_from_slice(&chunk_bytes);
     }
 
-    let chunk = codec::decode_chunk(&buf).map_err(|err| WALError::Internal(err.to_string()))?;
-    Ok(chunk)
+    let records = codec::decode_chunk(&buf).map_err(|err| WALError::Internal(err.to_string()))?;
+    Ok(Chunk { records: records })
 }
