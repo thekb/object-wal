@@ -19,14 +19,6 @@ impl Record {
     }
 }
 
-/// Chunk is a collection of records.
-/// It is used for batching multiple records, to reduce writes to the Object
-/// Store. Each chunk is represented by an unique log sequence number.
-#[derive(Eq, Debug, PartialEq)]
-pub struct Chunk {
-    pub records: Vec<Record>,
-}
-
 /// Manifest presents current the state of WAL.
 /// chunks < watermark_seq are garbage collected
 /// writers should create a chunk with next_seq
@@ -49,15 +41,13 @@ pub enum WALError {
     ManifestOutOfDate(String),
 }
 
-// pub type RecordStream = Stream<Item = Result<Record, WALError>>;
-
 pub struct TailRequest {
     pub start_seq: u64,
 }
 
-/// WALTailer is the trait for tailing the WAL. The tailing the WAL starts from
+/// Tailer is the trait for tailing the WAL. The tailing the WAL starts from
 /// start_seq. WAL tailing is automatically cancelled when the stream is dropped.
-pub trait WALTailer {
+pub trait Tailer {
     fn tail(&self, cmd: TailRequest) -> impl Stream<Item = Result<Record, WALError>> + Send + '_;
 }
 
@@ -80,8 +70,16 @@ pub struct AppendResponse {
     pub chunk_seq: u64,
 }
 
-/// WALAppender is the trait for appends records to the WAL.
+/// Appends records to the WAL with an explicitly managed processing loop.
 #[async_trait]
 pub trait Appender {
+    /// Supervise the appender's processing tasks until shutdown or failure.
+    /// Run this concurrently with `append`; each instance may be run only once.
+    /// Errors may include publication failures after an append was acknowledged.
+    /// Dropping this future stops processing and fails queued acknowledgements.
+    async fn run(&self) -> Result<(), WALError>;
+
+    /// Queue an atomic request and wait for its durable acknowledgement.
+    /// Requests submitted before `run` starts wait for it to be driven.
     async fn append(&self, cmd: AppendRequest) -> Result<AppendResponse, WALError>;
 }

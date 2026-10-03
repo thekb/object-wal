@@ -1,0 +1,10 @@
+# Copy to .envrc and fill in your R2 S3 credentials and bucket settings.
+# Then run: direnv allow
+export AWS_ACCESS_KEY_ID="<R2 access key ID>"
+export AWS_SECRET_ACCESS_KEY="<R2 secret access key>"
+export AWS_REGION="auto"
+export AWS_ENDPOINT_URL="https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+export S3_TEST_BUCKET="<R2 test bucket>"
+
+# Standard R2 key pairs do not use an AWS session token.
+unset AWS_SESSION_TOKEN

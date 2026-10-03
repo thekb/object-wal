@@ -25,11 +25,6 @@ pub struct GetObjectRequest {
     pub if_none_match: Option<String>,
     pub key: String,
 }
-/// ObjectStream is thread safe (Send), heap allocated (Box) with stable memory
-/// address implementation of the Stream trait. This is needed to transparently
-/// switch various object store providers without changing the WAL implementation.
-pub type ObjectStream = Pin<Box<dyn Stream<Item = Result<Bytes, ObjectStoreError>> + Send + Sync>>;
-
 pub type ReadObjectStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, ObjectStoreError>> + Send + 'static>>;
 

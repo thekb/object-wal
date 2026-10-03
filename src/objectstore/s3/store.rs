@@ -3,7 +3,8 @@ use async_stream::try_stream;
 use async_trait::async_trait;
 use aws_sdk_s3 as s3;
 use aws_sdk_s3::error::ProvideErrorMetadata;
-use aws_sdk_s3::primitives::{ByteStream, SdkBody};
+use aws_sdk_s3::primitives::ByteStream;
+use aws_smithy_types::body::SdkBody;
 use futures::Stream;
 use futures::TryStreamExt;
 use http_body::Frame;
@@ -25,10 +26,7 @@ fn into_read_object_stream(body: aws_sdk_s3::primitives::ByteStream) -> ReadObje
 fn into_aws_byte_stream(write_body: WriteObjectBody) -> ByteStream {
     match write_body {
         WriteObjectBody::Bytes(buf) => ByteStream::from(buf),
-        WriteObjectBody::Stream {
-            stream,
-            content_length,
-        } => {
+        WriteObjectBody::Stream { stream, .. } => {
             let frames = stream.map_ok(Frame::data);
             let body = StreamBody::new(frames);
             let sdk_body = SdkBody::from_body_1_x(body);

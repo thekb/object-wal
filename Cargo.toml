@@ -1,3 +1,34 @@
-[workspace]
-members = ["crates/object-wal-core"]
-resolver = "3"
+[package]
+name = "object-wal"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "A buffered write-ahead log backed by object storage"
+
+[dependencies]
+async-stream = "0.3.6"
+async-trait = "0.1.92"
+aws-sdk-s3 = "1.143.0"
+# Enables the HTTP body adapter used by S3 streaming uploads.
+aws-smithy-types = { version = "1.6.2", features = ["http-body-1-x"] }
+bytes = "1.12.1"
+crc32fast = "1.5.0"
+futures = "0.3.34"
+http-body = "1.1.0"
+http-body-util = "0.1.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+aws-config = "1.11.0"
+tokio = { version = "1.53.1", features = ["test-util"] }
+
+[[bench]]
+name = "s3_throughput"
+harness = false
+
+[[bench]]
+name = "s3_flush_timeout"
+harness = false
