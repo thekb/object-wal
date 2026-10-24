@@ -20,7 +20,7 @@ impl Record {
 }
 
 /// Manifest presents current the state of WAL.
-/// chunks < watermark_seq are garbage collected
+/// chunks < watermark_seq are no longer visible and may be garbage collected
 /// writers should create a chunk with next_seq
 ///
 #[derive(Serialize, Deserialize, Copy, Clone)]
@@ -49,6 +49,24 @@ pub struct TailRequest {
 /// start_seq. WAL tailing is automatically cancelled when the stream is dropped.
 pub trait Tailer {
     fn tail(&self, cmd: TailRequest) -> impl Stream<Item = Result<Record, WALError>> + Send + '_;
+}
+
+/// Advance retention and remove WAL chunks older than the resulting watermark.
+/// A failed deletion leaves the watermark advanced; calling collect again retries
+/// cleanup of all chunks below it.
+pub struct GarbageCollectRequest {
+    pub retain_from_seq: u64,
+}
+
+pub struct GarbageCollectResponse {
+    pub watermark_seq: u64,
+    pub deleted_chunks: usize,
+}
+
+#[async_trait]
+pub trait GarbageCollector: Send + Sync {
+    async fn collect(&self, cmd: GarbageCollectRequest)
+    -> Result<GarbageCollectResponse, WALError>;
 }
 
 /// AppendRequest represents a chunk of records that need to be appended to the

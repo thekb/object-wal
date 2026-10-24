@@ -39,10 +39,12 @@
 //! ```
 pub mod appender;
 mod common;
+pub mod gc;
 mod manifest;
 pub mod tailer;
 
 pub use appender::{AppenderConfig, AppenderImpl};
+pub use gc::GarbageCollectorImpl;
 pub use tailer::TailerImpl;
 
 #[cfg(test)]

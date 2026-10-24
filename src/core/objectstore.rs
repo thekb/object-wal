@@ -57,7 +57,7 @@ pub trait ObjectStoreReader: Send + Sync {
     fn list_objects(
         &self,
         cmd: ListObjectsRequest,
-    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>>;
+    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>> + Send;
 }
 
 pub enum PutObjectCondition {
@@ -104,6 +104,17 @@ where
         &self,
         cmd: PubObjectRequest,
     ) -> Result<PutObjectResponse, ObjectStoreError>;
+}
+
+pub struct DeleteObjectRequest {
+    pub bucket: String,
+    pub key: String,
+}
+
+#[async_trait]
+pub trait ObjectStoreDeleter: Send + Sync {
+    /// Delete an object if it exists. Deleting an absent object succeeds.
+    async fn delete_object(&self, cmd: DeleteObjectRequest) -> Result<(), ObjectStoreError>;
 }
 
 pub struct CreateBucketInput {

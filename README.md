@@ -3,7 +3,7 @@ Experiment to create a WAL out of S3 like object stores
 
 The repository is a single Rust package, `object-wal` (import as `object_wal`).
 `src/core` defines the WAL and storage contracts and chunk codec; `src/wal`
-implements buffering, manifest coordination, and tailing; `src/objectstore`
+implements buffering, manifest coordination, tailing, and garbage collection; `src/objectstore`
 contains the S3 adapter. Integration tests live in `tests/`, and the adaptive
 throughput benchmark lives in `benches/`.
 
@@ -12,10 +12,20 @@ cargo test
 cargo bench --bench s3_throughput -- --plan
 ```
 
+## Garbage collection
+
+`GarbageCollectorImpl::collect(GarbageCollectRequest { retain_from_seq })`
+retains chunks at or above the requested sequence. The requested sequence must
+not exceed the manifest's published `next_seq`. Collection advances the
+manifest watermark with a conditional write before deleting older chunk objects.
+If listing or deletion fails, the watermark remains advanced; call `collect`
+again to retry cleanup. Concurrent collectors and appenders coordinate through
+the manifest's ETag.
+
 ## Live S3 / Cloudflare R2 integration tests
 
 The live tests are ignored by default. They exercise conditional object writes,
-buffered append/tail round trips, independent appender instances, and recovery
+buffered append/tail round trips, garbage collection, independent appender instances, and recovery
 of unpublished chunks against an existing bucket.
 
 Copy `.envrc.example` to `.envrc` if you have not configured it already. Set the

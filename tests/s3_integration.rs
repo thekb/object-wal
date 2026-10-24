@@ -22,7 +22,7 @@ use object_wal::{
         wal::*,
     },
     objectstore::s3::S3Store,
-    wal::{AppenderConfig, AppenderImpl, TailerImpl},
+    wal::{AppenderConfig, AppenderImpl, GarbageCollectorImpl, TailerImpl},
 };
 use tokio::{task::JoinSet, time::timeout};
 
@@ -336,6 +336,43 @@ async fn s3_buffered_append_and_tail() -> TestResult {
                 h.read_records(1, 1).await?,
                 vec![Record::new("key", "third")]
             );
+            Ok(())
+        })
+    })
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires R2/S3 credentials, endpoint, and an existing test bucket"]
+async fn s3_garbage_collects_published_chunks() -> TestResult {
+    run_case("garbage-collection", |h| {
+        Box::pin(async move {
+            let appender = h.appender(Duration::ZERO);
+            for value in ["zero", "one", "two"] {
+                appender.append(request(value)).await?;
+            }
+            h.drain().await?;
+            let collector = GarbageCollectorImpl::new(h.store.clone(), &h.bucket, &h.prefix);
+            let result = collector
+                .collect(GarbageCollectRequest { retain_from_seq: 2 })
+                .await?;
+            assert_eq!(result.watermark_seq, 2);
+            assert_eq!(result.deleted_chunks, 2);
+            assert_eq!(h.manifest().await?.next_seq, 3);
+            assert_eq!(h.manifest().await?.watermark_seq, 2);
+            for seq in [0, 1] {
+                assert!(matches!(
+                    h.store
+                        .get_object(GetObjectRequest {
+                            bucket: h.bucket.clone(),
+                            key: chunk_key(&h.prefix, seq),
+                            if_none_match: None,
+                        })
+                        .await,
+                    Err(ObjectStoreError::NotFound(_))
+                ));
+            }
+            assert_eq!(h.read_records(0, 1).await?, vec![Record::new("key", "two")]);
             Ok(())
         })
     })

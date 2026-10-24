@@ -99,7 +99,7 @@ impl ObjectStoreReader for S3Store {
     fn list_objects(
         &self,
         cmd: ListObjectsRequest,
-    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>> {
+    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>> + Send {
         let client = self.client.clone();
         let mut paginator = client
             .list_objects_v2()
@@ -182,6 +182,20 @@ impl ObjectStoreWriter for S3Store {
         })?;
 
         Ok(PutObjectResponse { etag })
+    }
+}
+
+#[async_trait]
+impl ObjectStoreDeleter for S3Store {
+    async fn delete_object(&self, cmd: DeleteObjectRequest) -> Result<(), ObjectStoreError> {
+        self.client
+            .delete_object()
+            .bucket(cmd.bucket)
+            .key(cmd.key)
+            .send()
+            .await
+            .map_err(|err| ObjectStoreError::Internal(err.to_string()))?;
+        Ok(())
     }
 }
 

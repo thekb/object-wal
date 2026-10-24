@@ -3,12 +3,12 @@ use thiserror::Error;
 
 const MAGIC: &[u8; 8] = b"!OBJWAL!";
 const VERSION: u16 = 1;
-pub const CHUNK_HEADER_LEN: usize = MAGIC.len() + 2 + 2;
+pub const CHUNK_HEADER_LEN: usize = MAGIC.len() + 2 + 2; // MAGIC + version + num key values
 pub const CHUNK_CHECKSUM_LEN: usize = 4;
 pub const CHUNK_OVERHEAD_LEN: usize = CHUNK_HEADER_LEN + CHUNK_CHECKSUM_LEN;
 pub const MAX_NUM_RECORDS: usize = u16::MAX as usize;
-const MAX_KEY_LEN: usize = 64 * 1024 / 8;
-pub const MAX_VAL_LEN: usize = 4 * 1024 * 1024;
+const MAX_KEY_LEN: usize = 16 * 1024; // 16 KB
+pub const MAX_VAL_LEN: usize = 4 * 1024 * 1024; // 4MB
 pub const MAX_KEY_VALUE_LEN: usize = 64 * 1024 * 1024;
 pub const MAX_CHUNK_LEN: usize = MAX_KEY_VALUE_LEN + CHUNK_OVERHEAD_LEN + 8 * MAX_NUM_RECORDS;
 

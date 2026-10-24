@@ -27,6 +27,7 @@ struct MemoryStore {
     fail_manifest: AtomicUsize,
     conflicts: AtomicUsize,
     fail_chunk: AtomicUsize,
+    fail_delete: AtomicUsize,
     phantom_collision: AtomicUsize,
     manifest_gate: Mutex<Option<Arc<Semaphore>>>,
     manifest_started: Notify,
@@ -56,9 +57,43 @@ impl ObjectStoreReader for MemoryStore {
     }
     fn list_objects(
         &self,
-        _: ListObjectsRequest,
-    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>> {
-        futures::stream::empty()
+        cmd: ListObjectsRequest,
+    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>> + Send {
+        async_stream::try_stream! {
+            let objects = self.objects.lock().await;
+            let listed: Vec<_> = objects.iter()
+                .filter(|(key, _)| cmd.prefix.as_ref().is_none_or(|prefix| key.starts_with(prefix)))
+                .map(|(key, (bytes, etag))| ObjectMetadata {
+                    key: key.clone(),
+                    etag: etag.clone(),
+                    size: bytes.len() as u64,
+                })
+                .collect();
+            drop(objects);
+            for object in listed {
+                yield object;
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl ObjectStoreDeleter for MemoryStore {
+    async fn delete_object(&self, cmd: DeleteObjectRequest) -> Result<(), ObjectStoreError> {
+        if self.fail_delete.swap(0, Ordering::SeqCst) > 0 {
+            return Err(ObjectStoreError::Internal("injected delete failure".into()));
+        }
+        let mut objects = self.objects.lock().await;
+        let manifest: Manifest = serde_json::from_slice(&objects[&manifest_key("wal")].0)
+            .map_err(|error| ObjectStoreError::Internal(error.to_string()))?;
+        let seq = cmd.key.rsplit('-').next().unwrap().parse::<u64>().unwrap();
+        if seq >= manifest.watermark_seq {
+            return Err(ObjectStoreError::Internal(
+                "delete preceded retention".into(),
+            ));
+        }
+        objects.remove(&cmd.key);
+        Ok(())
     }
 }
 
@@ -90,7 +125,7 @@ impl ObjectStoreReader for ChunkDisappearsOnRead {
     fn list_objects(
         &self,
         cmd: ListObjectsRequest,
-    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>> {
+    ) -> impl Stream<Item = Result<ObjectMetadata, ObjectStoreError>> + Send {
         self.inner.list_objects(cmd)
     }
 }
@@ -409,6 +444,96 @@ async fn missing_manifest_is_a_stream_error() {
         Some(Err(WALError::DoesNotExist(_)))
     ));
     assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn garbage_collection_advances_watermark_before_deleting_chunks() {
+    let store = Arc::new(MemoryStore::default());
+    let (appender, run) = start_tracked(AppenderImpl::new(store.clone(), "bucket", "wal"));
+    for value in ["zero", "one", "two"] {
+        appender.append(request(value)).await.unwrap();
+    }
+    appender.close().await;
+    run.await.unwrap().unwrap();
+    store.objects.lock().await.insert(
+        "wal/chunk-not-a-sequence".into(),
+        (Bytes::from_static(b"keep"), "other".into()),
+    );
+
+    let gc = GarbageCollectorImpl::new(store.clone(), "bucket", "wal");
+    let result = gc
+        .collect(GarbageCollectRequest { retain_from_seq: 2 })
+        .await
+        .unwrap();
+    assert_eq!(result.watermark_seq, 2);
+    assert_eq!(result.deleted_chunks, 2);
+    assert_eq!(manifest(&store).await.next_seq, 3);
+    let objects = store.objects.lock().await;
+    assert!(!objects.contains_key(&chunk_key("wal", 0)));
+    assert!(!objects.contains_key(&chunk_key("wal", 1)));
+    assert!(objects.contains_key(&chunk_key("wal", 2)));
+    assert!(objects.contains_key("wal/chunk-not-a-sequence"));
+    drop(objects);
+
+    let tailer = TailerImpl::new(store.clone(), "bucket", "wal");
+    let mut stream = Box::pin(tailer.tail(TailRequest { start_seq: 0 }));
+    assert_eq!(
+        stream.next().await.unwrap().unwrap(),
+        Record::new("key", "two")
+    );
+
+    let again = gc
+        .collect(GarbageCollectRequest { retain_from_seq: 1 })
+        .await
+        .unwrap();
+    assert_eq!(again.watermark_seq, 2);
+    assert_eq!(again.deleted_chunks, 0);
+}
+
+#[tokio::test]
+async fn garbage_collection_retries_deletion_after_partial_failure() {
+    let store = Arc::new(MemoryStore::default());
+    let (appender, run) = start_tracked(AppenderImpl::new(store.clone(), "bucket", "wal"));
+    for value in ["zero", "one"] {
+        appender.append(request(value)).await.unwrap();
+    }
+    appender.close().await;
+    run.await.unwrap().unwrap();
+    let gc = GarbageCollectorImpl::new(store.clone(), "bucket", "wal");
+    assert!(matches!(
+        gc.collect(GarbageCollectRequest { retain_from_seq: 3 })
+            .await,
+        Err(WALError::BadRequest(_))
+    ));
+    assert_eq!(manifest(&store).await.watermark_seq, 0);
+
+    store.conflicts.store(1, Ordering::SeqCst);
+    store.fail_delete.store(1, Ordering::SeqCst);
+    assert!(
+        gc.collect(GarbageCollectRequest { retain_from_seq: 2 })
+            .await
+            .is_err()
+    );
+    assert_eq!(manifest(&store).await.watermark_seq, 2);
+    let retried = gc
+        .collect(GarbageCollectRequest { retain_from_seq: 2 })
+        .await
+        .unwrap();
+    assert_eq!(retried.deleted_chunks, 2);
+    assert!(
+        !store
+            .objects
+            .lock()
+            .await
+            .contains_key(&chunk_key("wal", 0))
+    );
+    assert!(
+        !store
+            .objects
+            .lock()
+            .await
+            .contains_key(&chunk_key("wal", 1))
+    );
 }
 
 #[test]
